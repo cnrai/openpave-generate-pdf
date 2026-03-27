@@ -141,7 +141,26 @@ function resolveLogoToBase64(filePath, label) {
   else if (ext === '.gif') mime = 'image/gif';
   else if (ext === '.webp') mime = 'image/webp';
   // Use system base64 command to encode — Buffer.toString('base64') is broken in PAVE sandbox
-  var b64 = exec('base64 < ' + shellEscape(abs) + ' | tr -d "\\n"').trim();
+  // Use cat|base64 instead of base64<file for sandbox compatibility
+  var b64 = '';
+  try {
+    b64 = exec('cat ' + shellEscape(abs) + ' | base64 | tr -d "\\n"').trim();
+  } catch (e) {}
+  // Fallback: try base64 -i (macOS)
+  if (!b64 || b64.length < 10) {
+    try {
+      b64 = exec('base64 -i ' + shellEscape(abs) + ' | tr -d "\\n"').trim();
+    } catch (e) {}
+  }
+  // Fallback: try fs.readFileSync with manual base64
+  if (!b64 || b64.length < 10) {
+    try {
+      var rawBytes = fs.readFileSync(abs);
+      if (rawBytes && typeof rawBytes.toString === 'function') {
+        b64 = rawBytes.toString('base64');
+      }
+    } catch (e) {}
+  }
   if (!b64 || b64.length < 10) throw new Error('Failed to base64-encode logo: ' + abs);
   return 'data:' + mime + ';base64,' + b64;
 }
@@ -166,12 +185,20 @@ function getSkillAssetsDir() {
 
 // Get the bundled C&R logo (black for light theme, white for dark theme)
 function getBundledCnrLogo(variant) {
-  var dir = getSkillAssetsDir();
-  if (!dir) return null;
   var filename = variant === 'white' ? 'cnr-logo-white.png' : 'cnr-logo-black.png';
-  var logoPath = path.join(dir, filename);
-  if (!fs.existsSync(logoPath)) return null;
-  return logoPath;
+  // Check directly for the file — sandbox fs.existsSync returns false for directories
+  var candidates = [
+    path.join(__dirname || '.', 'assets', filename),
+    path.join(process.cwd(), 'assets', filename),
+  ];
+  var home = process.env.HOME || process.env.USERPROFILE || '';
+  if (home) {
+    candidates.push(path.join(home, '.pave', 'skills', 'pdf', 'assets', filename));
+  }
+  for (var i = 0; i < candidates.length; i++) {
+    if (fs.existsSync(candidates[i])) return candidates[i];
+  }
+  return null;
 }
 
 function esc(text) {
@@ -438,14 +465,48 @@ function lighten(hex, lightness) {
 // LIGHT THEME — HTML builder
 // ===================================================================
 
-function lightBuildHtml(content, accent) {
+function lightBuildHtml(content, accent, logos) {
   var blocks = content.blocks || [];
   var accentDark = darken(accent, 0.3);
   var accentLight = lighten(accent, 0.92);
   var css = lightBuildCss(accent, accentDark, accentLight);
 
-  var html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n<title>' + esc(content.header ? content.header.title : 'Document') + '</title>\n' + css + '\n</head>\n<body>\n';
-  html += blocks.map(lightRenderBlock).join('\n');
+  // Build header and footer HTML for embedding in pages
+  var hdr = content.header || {};
+  var ftr = content.footer || {};
+  logos = logos || {};
+  var logo1Img = logos.logo1 ? '<img src="' + logos.logo1 + '" class="hdr-logo" />' : '';
+  var logo2Img = logos.logo2 ? '<img src="' + logos.logo2 + '" class="hdr-logo" />' : '';
+  var logoSep = (logos.logo1 && logos.logo2) ? '<div class="hdr-sep"></div>' : '';
+  var yr = new Date().getFullYear();
+  var footerLeft = esc(ftr.left || '(c) ' + yr + ' C&R Wise AI Limited');
+  var footerCenter = esc(ftr.center || 'Commercial in Confidence');
+
+  var headerHtml = '<div class="page-header"><div class="header-logos">' + logo1Img + logoSep + logo2Img + '</div>' +
+    '<div class="header-title"><div class="header-title-main">' + esc(hdr.title || '') + '</div>' +
+    (hdr.subtitle ? '<div class="header-title-sub">' + esc(hdr.subtitle) + '</div>' : '') +
+    '</div></div>';
+
+  // Split blocks into pages at page-break markers
+  var pages = [[]];
+  blocks.forEach(function(block) {
+    if (block.type === 'page-break') {
+      pages.push([]);
+    } else {
+      pages[pages.length - 1].push(block);
+    }
+  });
+
+  var html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n<title>' + esc(hdr.title || 'Document') + '</title>\n' + css + '\n</head>\n<body>\n';
+
+  pages.forEach(function(pageBlocks, pageIdx) {
+    var pageNum = pageIdx + 1;
+    var footerHtml = '<div class="page-footer"><span>' + footerLeft + '</span><span class="footer-center">' + footerCenter + '</span><span>Page ' + pageNum + '</span></div>';
+    html += '<div class="page">\n  ' + headerHtml + '\n  <div class="page-content">\n';
+    html += pageBlocks.map(lightRenderBlock).join('\n');
+    html += '\n  </div>\n  ' + footerHtml + '\n</div>\n';
+  });
+
   html += '\n</body>\n</html>';
   return html;
 }
@@ -524,7 +585,7 @@ function cmdDarkGenerate(opts) {
 
   var content = loadContent(input);
 
-  // Validate client logo — prompt user if not found
+  // Validate client logo — MANDATORY for all C&R documents
   var clientLogoPath = opts['client-logo'] || (content.logos && content.logos.client) || null;
   if (clientLogoPath) {
     var absClient = resolvePath(clientLogoPath);
@@ -534,12 +595,15 @@ function cmdDarkGenerate(opts) {
       process.exit(1);
     }
   } else {
-    console.log('');
-    console.log('NOTE: No client logo provided.');
-    console.log('  To include a client logo on the cover, use:');
-    console.log('    --client-logo <path-to-client-logo>');
-    console.log('  Or add "logos.client" to your content JSON.');
-    console.log('');
+    console.error('');
+    console.error('ERROR: Client logo is required.');
+    console.error('All C&R proposals must include the client logo.');
+    console.error('');
+    console.error('Please provide the client logo using one of:');
+    console.error('  --client-logo <path-to-client-logo.png>');
+    console.error('  Or set "logos.client" in your content JSON file.');
+    console.error('');
+    process.exit(1);
   }
 
   // Resolve C&R logo: CLI > content JSON > bundled asset (white for dark theme)
@@ -593,7 +657,7 @@ function cmdDarkPreview(opts) {
 
   var content = loadContent(input);
 
-  // Validate client logo
+  // Validate client logo — MANDATORY
   var clientLogoPath = opts['client-logo'] || (content.logos && content.logos.client) || null;
   if (clientLogoPath) {
     var absClient = resolvePath(clientLogoPath);
@@ -602,6 +666,16 @@ function cmdDarkPreview(opts) {
       console.error('Please provide the correct client logo path via --client-logo <file> or update logos.client in your content JSON.');
       process.exit(1);
     }
+  } else {
+    console.error('');
+    console.error('ERROR: Client logo is required.');
+    console.error('All C&R proposals must include the client logo.');
+    console.error('');
+    console.error('Please provide the client logo using one of:');
+    console.error('  --client-logo <path-to-client-logo.png>');
+    console.error('  Or set "logos.client" in your content JSON file.');
+    console.error('');
+    process.exit(1);
   }
 
   var logos = {
@@ -645,15 +719,19 @@ function cmdLightGenerate(opts) {
     }
   }
 
-  // Resolve client logo (logo2): CLI > content JSON
+  // Resolve client logo (logo2): CLI > content JSON — MANDATORY
   var clientLogoPath = opts.logo2 || opts['client-logo'] || (content.logos && content.logos.logo2) || (content.logos && content.logos.client) || null;
   if (!clientLogoPath) {
-    console.log('');
-    console.log('NOTE: No client logo provided.');
-    console.log('  To include a client logo in the header, use:');
-    console.log('    --logo2 <path-to-client-logo>');
-    console.log('  Or add "logos.logo2" to your content JSON.');
-    console.log('');
+    console.error('');
+    console.error('ERROR: Client logo is required.');
+    console.error('All C&R proposals must include the client logo in the header.');
+    console.error('');
+    console.error('Please provide the client logo using one of:');
+    console.error('  --logo2 <path-to-client-logo.png>');
+    console.error('  --client-logo <path-to-client-logo.png>');
+    console.error('  Or set "logos.logo2" in your content JSON file.');
+    console.error('');
+    process.exit(1);
   } else {
     var absClient = resolvePath(clientLogoPath);
     if (!fs.existsSync(absClient)) {
@@ -668,7 +746,7 @@ function cmdLightGenerate(opts) {
     logo2: resolveLogoToBase64(clientLogoPath, 'Client logo')
   };
 
-  var html = lightBuildHtml(content, accent);
+  var html = lightBuildHtml(content, accent, logos);
   var outputPath = opts.o || opts.output || ('tmp/' + sanitiseFilename(content.header ? content.header.title : 'document') + '.pdf');
   outputPath = resolvePath(outputPath);
   ensureDir(path.dirname(outputPath));
@@ -677,37 +755,8 @@ function cmdLightGenerate(opts) {
   var tmpHtml = path.join(path.dirname(outputPath), '.tmp-light-doc.html');
   fs.writeFileSync(tmpHtml, html, 'utf8');
 
-  // Build header/footer templates for displayHeaderFooter
-  var hdr = content.header || {};
-  var logo1Img = logos.logo1 ? '<img src="' + logos.logo1 + '" style="height:28px;" />' : '';
-  var logo2Img = logos.logo2 ? '<img src="' + logos.logo2 + '" style="height:28px;" />' : '';
-  var logoSep = (logos.logo1 && logos.logo2) ? '<div style="width:1px; height:24px; background:#e2e8f0; margin:0 12px;"></div>' : '';
-
-  var headerTemplate = '<div style="width:100%; font-size:9px; padding:10px 50px; display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #2459BB;">' +
-    '<div style="display:flex; align-items:center;">' + logo1Img + logoSep + logo2Img + '</div>' +
-    '<div style="text-align:right; color:#4a5568;">' +
-      '<div style="font-weight:700; color:#2459BB; font-size:10px;">' + esc(hdr.title || '') + '</div>' +
-      (hdr.subtitle ? '<div style="font-size:8px; color:#6b7280;">' + esc(hdr.subtitle) + '</div>' : '') +
-    '</div>' +
-  '</div>';
-
-  var ftr = content.footer || {};
-  var yr = new Date().getFullYear();
-  var footerLeft = esc(ftr.left || '(c) ' + yr + ' C&R Wise AI Limited');
-  var footerCenter = esc(ftr.center || 'Commercial in Confidence');
-  var footerRight = ftr.right || 'Page <span class="pageNumber"></span> of <span class="totalPages"></span>';
-
-  var footerTemplate = '<div style="width:100%; font-size:8px; padding:10px 50px; display:flex; justify-content:space-between; align-items:center; border-top:2px solid #2459BB; color:#6b7280;">' +
-    '<div>' + footerLeft + '</div>' +
-    '<div style="font-weight:600; color:#2459BB;">' + footerCenter + '</div>' +
-    '<div>' + footerRight + '</div>' +
-  '</div>';
-
   renderPdfViaPuppeteer(tmpHtml, outputPath, {
-    displayHeaderFooter: true,
-    headerTemplate: headerTemplate,
-    footerTemplate: footerTemplate,
-    margin: { top: '130px', bottom: '80px', left: '50px', right: '50px' }
+    margin: { top: 0, right: 0, bottom: 0, left: 0 }
   });
 
   try { exec('rm -f ' + shellEscape(tmpHtml)); } catch (e) {}
@@ -726,7 +775,32 @@ function cmdLightPreview(opts) {
 
   var content = loadContent(input);
   var accent = opts.accent || content.accent || '#2459BB';
-  var html = lightBuildHtml(content, accent);
+
+  // Resolve logos same as generate
+  var cnrLogoPath = opts.logo1 || (content.logos && content.logos.logo1) || null;
+  if (!cnrLogoPath) {
+    var bundledCnr = getBundledCnrLogo('black');
+    if (bundledCnr) cnrLogoPath = bundledCnr;
+  }
+  var clientLogoPath = opts.logo2 || opts['client-logo'] || (content.logos && content.logos.logo2) || (content.logos && content.logos.client) || null;
+  if (!clientLogoPath) {
+    console.error('');
+    console.error('ERROR: Client logo is required.');
+    console.error('All C&R proposals must include the client logo in the header.');
+    console.error('');
+    console.error('Please provide the client logo using one of:');
+    console.error('  --logo2 <path-to-client-logo.png>');
+    console.error('  --client-logo <path-to-client-logo.png>');
+    console.error('  Or set "logos.logo2" in your content JSON file.');
+    console.error('');
+    process.exit(1);
+  }
+  var logos = {
+    logo1: resolveLogoToBase64(cnrLogoPath, 'C&R logo'),
+    logo2: resolveLogoToBase64(clientLogoPath, 'Client logo')
+  };
+
+  var html = lightBuildHtml(content, accent, logos);
   var outPath = opts.o || opts.output || ('tmp/' + sanitiseFilename(content.header ? content.header.title : 'preview') + '.html');
   outPath = resolvePath(outPath);
   fs.writeFileSync(outPath, html, 'utf8');
@@ -946,9 +1020,21 @@ function lightBuildCss(accent, accentDark, accentLight) {
 
   return '<style>\n' +
   "@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&family=Inter:wght@300;400;500;600;700;800&display=swap');\n" +
-  '@page { margin:130px 50px 80px 50px; }\n' +
+  '@page { size:210mm 297mm; margin:0; }\n' +
   '* { margin:0; padding:0; box-sizing:border-box; }\n' +
-  "body { font-family:'Outfit','Inter','Segoe UI',sans-serif; font-size:11px; line-height:1.6; color:#1a202c; max-width:100%; -webkit-print-color-adjust:exact; print-color-adjust:exact; }\n" +
+  "html { width:210mm; max-width:210mm; overflow:hidden; }\n" +
+  "body { font-family:'Outfit','Inter','Segoe UI',sans-serif; font-size:11px; line-height:1.6; color:#1a202c; width:210mm; max-width:210mm; -webkit-print-color-adjust:exact; print-color-adjust:exact; }\n" +
+  '.page { width:210mm; max-width:210mm; min-height:297mm; height:297mm; padding:14mm 18mm 14mm 18mm; background:#ffffff; page-break-after:always; position:relative; overflow:hidden; display:flex; flex-direction:column; }\n' +
+  '.page-header { display:flex; justify-content:space-between; align-items:center; padding-bottom:10px; border-bottom:2px solid ' + brandBlue + '; margin-bottom:14px; flex-shrink:0; }\n' +
+  '.header-logos { display:flex; align-items:center; gap:0; flex-shrink:0; }\n' +
+  '.hdr-logo { height:28px; display:block; }\n' +
+  '.hdr-sep { width:1px; height:24px; background:#e2e8f0; margin:0 12px; }\n' +
+  '.header-title { text-align:right; }\n' +
+  '.header-title-main { font-weight:700; color:' + brandBlue + '; font-size:10px; }\n' +
+  '.header-title-sub { font-size:8px; color:#6b7280; }\n' +
+  '.page-content { flex:1; overflow:hidden; }\n' +
+  '.page-footer { display:flex; justify-content:space-between; align-items:center; padding-top:8px; border-top:2px solid ' + brandBlue + '; margin-top:auto; flex-shrink:0; font-size:8px; color:#6b7280; }\n' +
+  '.footer-center { font-weight:600; color:' + brandBlue + '; }\n' +
   '.doc-title { font-size:30px; font-weight:800; color:' + brandBlue + '; border-bottom:none; margin-top:40px; margin-bottom:4px; padding-bottom:0; text-align:center; letter-spacing:-0.5px; }\n' +
   '.doc-subtitle { font-size:16px; font-weight:500; color:#4a5568; border-bottom:none; margin-top:0; margin-bottom:8px; text-align:center; }\n' +
   'h1 { color:' + brandBlue + '; font-size:20px; font-weight:700; border-bottom:3px solid ' + brandBlue + '; padding-bottom:8px; margin-top:28px; margin-bottom:12px; page-break-after:avoid; letter-spacing:-0.3px; }\n' +
