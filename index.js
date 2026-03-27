@@ -124,6 +124,51 @@ function sanitiseFilename(s) {
   return s.replace(/[^a-zA-Z0-9_\- ]/g, '').replace(/\s+/g, '-').substring(0, 80);
 }
 
+// Detect white/light logos on transparent backgrounds (invisible on light theme)
+// Writes a temp Python script to sample pixel brightness. Returns true if logo is too light.
+function isLogoTooLightForWhiteBg(filePath) {
+  try {
+    var abs = resolvePath(filePath);
+    var ext = path.extname(abs).toLowerCase();
+    if (ext !== '.png') return false; // Only check PNGs (transparency issue)
+
+    // Write a temp Python script — inline escapes get mangled by shell
+    var tmpPy = '/tmp/pave_check_logo_' + Date.now() + '.py';
+    var pyCode = [
+      'import sys',
+      'try:',
+      '    from PIL import Image',
+      '    img = Image.open(sys.argv[1]).convert("RGBA")',
+      '    px = img.load()',
+      '    w, h = img.size',
+      '    light = 0',
+      '    visible = 0',
+      '    step = max(1, (w * h) // 10000)',
+      '    idx = 0',
+      '    for y in range(h):',
+      '        for x in range(w):',
+      '            idx += 1',
+      '            if idx % step != 0: continue',
+      '            r, g, b, a = px[x, y]',
+      '            if a < 30: continue',
+      '            visible += 1',
+      '            lum = 0.299 * r + 0.587 * g + 0.114 * b',
+      '            if lum > 200: light += 1',
+      '    if visible == 0: print("EMPTY")',
+      '    elif float(light) / float(visible) > 0.85: print("TOO_LIGHT")',
+      '    else: print("OK")',
+      'except Exception as e:',
+      '    print("OK")',
+    ].join('\n') + '\n';
+    fs.writeFileSync(tmpPy, pyCode, 'utf8');
+    var result = exec('python3 ' + shellEscape(tmpPy) + ' ' + shellEscape(abs)).trim();
+    try { exec('rm -f ' + shellEscape(tmpPy)); } catch (e2) {}
+    return result === 'TOO_LIGHT';
+  } catch (e) {
+    return false; // If check fails, don't block — let the user see the result
+  }
+}
+
 function resolveLogoToBase64(filePath, label) {
   if (!filePath) return null;
   var abs = resolvePath(filePath);
@@ -739,6 +784,17 @@ function cmdLightGenerate(opts) {
       console.error('Please provide the correct client logo path via --logo2 <file>');
       process.exit(1);
     }
+    // Check for white/light logo on transparent background — invisible on white pages
+    if (isLogoTooLightForWhiteBg(clientLogoPath)) {
+      console.error('');
+      console.error('ERROR: The client logo appears to be white/light on a transparent background.');
+      console.error('It will be invisible on the light theme\'s white pages.');
+      console.error('');
+      console.error('Please provide a dark-colored version of the client logo for the light theme.');
+      console.error('  File: ' + resolvePath(clientLogoPath));
+      console.error('');
+      process.exit(1);
+    }
   }
 
   var logos = {
@@ -792,6 +848,17 @@ function cmdLightPreview(opts) {
     console.error('  --logo2 <path-to-client-logo.png>');
     console.error('  --client-logo <path-to-client-logo.png>');
     console.error('  Or set "logos.logo2" in your content JSON file.');
+    console.error('');
+    process.exit(1);
+  }
+  // Check for white/light logo on transparent background — invisible on white pages
+  if (isLogoTooLightForWhiteBg(clientLogoPath)) {
+    console.error('');
+    console.error('ERROR: The client logo appears to be white/light on a transparent background.');
+    console.error('It will be invisible on the light theme\'s white pages.');
+    console.error('');
+    console.error('Please provide a dark-colored version of the client logo for the light theme.');
+    console.error('  File: ' + resolvePath(clientLogoPath));
     console.error('');
     process.exit(1);
   }
