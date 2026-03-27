@@ -134,8 +134,44 @@ function resolveLogoToBase64(filePath, label) {
     }
     throw new Error(msg);
   }
-  var data = fs.readFileSync(abs);
-  return 'data:image/png;base64,' + data.toString('base64');
+  var ext = path.extname(abs).toLowerCase();
+  var mime = 'image/png';
+  if (ext === '.jpg' || ext === '.jpeg') mime = 'image/jpeg';
+  else if (ext === '.svg') mime = 'image/svg+xml';
+  else if (ext === '.gif') mime = 'image/gif';
+  else if (ext === '.webp') mime = 'image/webp';
+  // Use system base64 command to encode — Buffer.toString('base64') is broken in PAVE sandbox
+  var b64 = exec('base64 < ' + shellEscape(abs) + ' | tr -d "\\n"').trim();
+  if (!b64 || b64.length < 10) throw new Error('Failed to base64-encode logo: ' + abs);
+  return 'data:' + mime + ';base64,' + b64;
+}
+
+// Resolve the skill's own bundled assets directory
+function getSkillAssetsDir() {
+  // __filename is available in sandbox; also try relative to script location
+  var candidates = [
+    path.join(__dirname || '.', 'assets'),
+    path.join(process.cwd(), 'assets'),
+  ];
+  // Also check common PAVE skill paths
+  var home = process.env.HOME || process.env.USERPROFILE || '';
+  if (home) {
+    candidates.push(path.join(home, '.pave', 'skills', 'pdf', 'assets'));
+  }
+  for (var i = 0; i < candidates.length; i++) {
+    if (fs.existsSync(candidates[i])) return candidates[i];
+  }
+  return null;
+}
+
+// Get the bundled C&R logo (black for light theme, white for dark theme)
+function getBundledCnrLogo(variant) {
+  var dir = getSkillAssetsDir();
+  if (!dir) return null;
+  var filename = variant === 'white' ? 'cnr-logo-white.png' : 'cnr-logo-black.png';
+  var logoPath = path.join(dir, filename);
+  if (!fs.existsSync(logoPath)) return null;
+  return logoPath;
 }
 
 function esc(text) {
@@ -266,7 +302,7 @@ function darkBuildHtml(content, logos) {
   var cover = content.cover || {};
   var pages = content.pages || [];
   var entity = content.entity || 'C&R Wise AI Limited';
-  var headerLabel = cover.headerLabel || (cover.clientName || '') + ' — ' + (cover.shortTitle || cover.title || '');
+  var headerLabel = cover.headerLabel || (cover.clientName || '') + ' - ' + (cover.shortTitle || cover.title || '');
 
   var html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n<title>' + esc(cover.title || 'Proposal') + '</title>\n' + DARK_CSS + '\n</head>\n<body>\n';
 
@@ -429,7 +465,9 @@ function renderPdfViaPuppeteer(htmlPath, outputPath, pdfOptions) {
   var footerTemplate = pdfOptions.footerTemplate || '';
 
   var scriptContent = [
-    'import puppeteer from "puppeteer";',
+    'import { createRequire } from "module";',
+    'const require = createRequire("/opt/homebrew/lib/node_modules/.package.json");',
+    'const puppeteer = require("puppeteer");',
     '',
     'const browser = await puppeteer.launch({',
     '  headless: "new",',
@@ -466,7 +504,7 @@ function renderPdfViaPuppeteer(htmlPath, outputPath, pdfOptions) {
     exec("cat > " + shellEscape(tmpScript) + " << 'PAVE_PDF_EOF'\n" + scriptContent + "\nPAVE_PDF_EOF");
   }
 
-  var result = execCommand('node ' + shellEscape(tmpScript) + ' 2>&1');
+  var result = execCommand('NODE_PATH=/opt/homebrew/lib/node_modules node ' + shellEscape(tmpScript) + ' 2>&1');
 
   // Clean up
   try { exec('rm -f ' + shellEscape(tmpScript)); } catch (e) {}
@@ -495,10 +533,27 @@ function cmdDarkGenerate(opts) {
       console.error('Please provide the correct client logo path via --client-logo <file> or update logos.client in your content JSON.');
       process.exit(1);
     }
+  } else {
+    console.log('');
+    console.log('NOTE: No client logo provided.');
+    console.log('  To include a client logo on the cover, use:');
+    console.log('    --client-logo <path-to-client-logo>');
+    console.log('  Or add "logos.client" to your content JSON.');
+    console.log('');
+  }
+
+  // Resolve C&R logo: CLI > content JSON > bundled asset (white for dark theme)
+  var cnrLogoPath = opts['cnr-logo'] || (content.logos && content.logos.cnr) || null;
+  if (!cnrLogoPath) {
+    var bundledCnr = getBundledCnrLogo('white');
+    if (bundledCnr) {
+      cnrLogoPath = bundledCnr;
+      console.log('Using bundled C&R logo: ' + bundledCnr);
+    }
   }
 
   var logos = {
-    cnr: resolveLogoToBase64(opts['cnr-logo'] || (content.logos && content.logos.cnr) || null, 'C&R logo'),
+    cnr: resolveLogoToBase64(cnrLogoPath, 'C&R logo'),
     pave: resolveLogoToBase64(opts['pave-logo'] || (content.logos && content.logos.pave) || null, 'PAVE logo'),
     client: resolveLogoToBase64(clientLogoPath, 'Client logo')
   };
@@ -578,10 +633,39 @@ function cmdLightGenerate(opts) {
   if (!input) throw new Error('--input / -i is required');
 
   var content = loadContent(input);
-  var accent = opts.accent || content.accent || '#0066CC';
+  var accent = opts.accent || content.accent || '#2459BB';
+
+  // Resolve C&R logo (logo1): CLI > content JSON > bundled asset
+  var cnrLogoPath = opts.logo1 || (content.logos && content.logos.logo1) || null;
+  if (!cnrLogoPath) {
+    var bundledCnr = getBundledCnrLogo('black');
+    if (bundledCnr) {
+      cnrLogoPath = bundledCnr;
+      console.log('Using bundled C&R logo: ' + bundledCnr);
+    }
+  }
+
+  // Resolve client logo (logo2): CLI > content JSON
+  var clientLogoPath = opts.logo2 || opts['client-logo'] || (content.logos && content.logos.logo2) || (content.logos && content.logos.client) || null;
+  if (!clientLogoPath) {
+    console.log('');
+    console.log('NOTE: No client logo provided.');
+    console.log('  To include a client logo in the header, use:');
+    console.log('    --logo2 <path-to-client-logo>');
+    console.log('  Or add "logos.logo2" to your content JSON.');
+    console.log('');
+  } else {
+    var absClient = resolvePath(clientLogoPath);
+    if (!fs.existsSync(absClient)) {
+      console.error('ERROR: Client logo not found: ' + absClient);
+      console.error('Please provide the correct client logo path via --logo2 <file>');
+      process.exit(1);
+    }
+  }
+
   var logos = {
-    logo1: resolveLogoToBase64(opts.logo1 || (content.logos && content.logos.logo1) || null),
-    logo2: resolveLogoToBase64(opts.logo2 || (content.logos && content.logos.logo2) || null)
+    logo1: resolveLogoToBase64(cnrLogoPath, 'C&R logo'),
+    logo2: resolveLogoToBase64(clientLogoPath, 'Client logo')
   };
 
   var html = lightBuildHtml(content, accent);
@@ -595,18 +679,29 @@ function cmdLightGenerate(opts) {
 
   // Build header/footer templates for displayHeaderFooter
   var hdr = content.header || {};
-  var logo1Img = logos.logo1 ? '<img src="' + logos.logo1 + '" style="height:40px;" />' : '';
-  var logo2Img = logos.logo2 ? '<img src="' + logos.logo2 + '" style="height:24px;" />' : '';
+  var logo1Img = logos.logo1 ? '<img src="' + logos.logo1 + '" style="height:28px;" />' : '';
+  var logo2Img = logos.logo2 ? '<img src="' + logos.logo2 + '" style="height:28px;" />' : '';
+  var logoSep = (logos.logo1 && logos.logo2) ? '<div style="width:1px; height:24px; background:#e2e8f0; margin:0 12px;"></div>' : '';
 
-  var headerTemplate = '<div style="width:100%; font-size:9px; padding:10px 50px; display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #e2e8f0;"><div style="display:flex; align-items:center; gap:15px;">' + logo1Img + logo2Img + '</div><div style="text-align:right; color:#4a5568;"><div style="font-weight:600;">' + esc(hdr.title || '') + '</div>' + (hdr.subtitle ? '<div style="font-size:8px; color:#718096;">' + esc(hdr.subtitle) + '</div>' : '') + '</div></div>';
+  var headerTemplate = '<div style="width:100%; font-size:9px; padding:10px 50px; display:flex; justify-content:space-between; align-items:center; border-bottom:2px solid #2459BB;">' +
+    '<div style="display:flex; align-items:center;">' + logo1Img + logoSep + logo2Img + '</div>' +
+    '<div style="text-align:right; color:#4a5568;">' +
+      '<div style="font-weight:700; color:#2459BB; font-size:10px;">' + esc(hdr.title || '') + '</div>' +
+      (hdr.subtitle ? '<div style="font-size:8px; color:#6b7280;">' + esc(hdr.subtitle) + '</div>' : '') +
+    '</div>' +
+  '</div>';
 
   var ftr = content.footer || {};
   var yr = new Date().getFullYear();
-  var footerLeft = esc(ftr.left || '\u00A9 ' + yr + ' C&R Wise AI Limited \u2013 Commercial in Confidence');
-  var footerCenter = esc(ftr.center || '');
+  var footerLeft = esc(ftr.left || '(c) ' + yr + ' C&R Wise AI Limited');
+  var footerCenter = esc(ftr.center || 'Commercial in Confidence');
   var footerRight = ftr.right || 'Page <span class="pageNumber"></span> of <span class="totalPages"></span>';
 
-  var footerTemplate = '<div style="width:100%; font-size:8px; padding:10px 50px; display:flex; justify-content:space-between; align-items:center; border-top:1px solid #e2e8f0; color:#718096;"><div>' + footerLeft + '</div><div>' + footerCenter + '</div><div>' + footerRight + '</div></div>';
+  var footerTemplate = '<div style="width:100%; font-size:8px; padding:10px 50px; display:flex; justify-content:space-between; align-items:center; border-top:2px solid #2459BB; color:#6b7280;">' +
+    '<div>' + footerLeft + '</div>' +
+    '<div style="font-weight:600; color:#2459BB;">' + footerCenter + '</div>' +
+    '<div>' + footerRight + '</div>' +
+  '</div>';
 
   renderPdfViaPuppeteer(tmpHtml, outputPath, {
     displayHeaderFooter: true,
@@ -630,7 +725,7 @@ function cmdLightPreview(opts) {
   if (!input) throw new Error('--input / -i is required');
 
   var content = loadContent(input);
-  var accent = opts.accent || content.accent || '#0066CC';
+  var accent = opts.accent || content.accent || '#2459BB';
   var html = lightBuildHtml(content, accent);
   var outPath = opts.o || opts.output || ('tmp/' + sanitiseFilename(content.header ? content.header.title : 'preview') + '.html');
   outPath = resolvePath(outPath);
@@ -654,7 +749,7 @@ var DARK_SAMPLE = {
     date: "MARCH 2026",
     version: "1.0",
     badge: "Confidential",
-    headerLabel: "Acme Corp \u2014 PAVE AI Enablement",
+    headerLabel: "Acme Corp -- PAVE AI Enablement",
     shortTitle: "PAVE AI Enablement"
   },
   pages: [
@@ -671,9 +766,9 @@ var DARK_SAMPLE = {
         ]},
         { type: "h3", text: "Value Proposition" },
         { type: "ul", items: [
-          "**From Outsourcing to Ownership** \u2014 Build internal capability",
-          "**Cross-functional enablement** \u2014 PMs, BAs, IT specialists all participate",
-          "**Low CapEx, Predictable OpEx** \u2014 Workshop + subscription model"
+          "**From Outsourcing to Ownership** -- Build internal capability",
+          "**Cross-functional enablement** -- PMs, BAs, IT specialists all participate",
+          "**Low CapEx, Predictable OpEx** -- Workshop + subscription model"
         ]}
       ]
     },
@@ -701,27 +796,38 @@ var DARK_SAMPLE = {
 };
 
 var LIGHT_SAMPLE = {
-  accent: "#0066CC",
+  accent: "#2459BB",
   logos: { logo1: null, logo2: null },
-  header: { title: "Project Name", subtitle: "Product Vision Document" },
-  footer: { left: "\u00A9 2026 C&R Wise AI Limited \u2013 Commercial in Confidence", center: "February 2026" },
+  header: { title: "Project Name", subtitle: "Scope of Work" },
+  footer: { left: "(c) 2026 C&R Wise AI Limited", center: "Commercial in Confidence" },
   blocks: [
     { type: "title", text: "Project Name" },
-    { type: "subtitle", text: "Product Vision Document" },
-    { type: "p", text: "**Intelligent Platform for Business Operations**" },
-    { type: "blockquote", text: "**UPDATED Feb 2026** \u2014 Revised based on client feedback." },
+    { type: "subtitle", text: "Scope of Work" },
+    { type: "p", text: "**Prepared for:** Client Name" },
+    { type: "blockquote", text: "**UPDATED March 2026** -- Revised based on client feedback." },
     { type: "hr" },
     { type: "h1", text: "1. Executive Summary" },
-    { type: "p", text: "This document outlines the product vision for an AI-powered system." },
+    { type: "p", text: "This document outlines the scope of work for an AI-powered system designed to transform business operations through intelligent automation." },
     { type: "hr" },
     { type: "h1", text: "2. Business Objectives" },
     { type: "table", columns: ["Objective", "Description"], widths: ["30%", "70%"], rows: [
       { cells: ["**Early Visibility**", "Gain real-time insight into progress"] },
       { cells: ["**Automated Extraction**", "Use AI to extract critical data"] },
-      { cells: ["**Reduced Manual Effort**", "Eliminate repetitive tasks"] }
+      { cells: ["**Reduced Manual Effort**", "Eliminate repetitive tasks"], highlight: true }
     ]},
     { type: "hr" },
-    { type: "h1", text: "3. Next Steps" },
+    { type: "h1", text: "3. Phased Approach" },
+    { type: "h2", text: "Phase 1: Prototype (2 weeks)" },
+    { type: "p", text: "Initial prototype development with core algorithms and UI framework." },
+    { type: "ul", items: [
+      "Working prototype demonstration",
+      "Accuracy metrics and benchmarks",
+      { text: "Architecture documentation", children: ["System design", "API specifications"] }
+    ]},
+    { type: "h2", text: "Phase 2: Full Development (4 weeks)" },
+    { type: "p", text: "Complete system build with all features and integration points." },
+    { type: "hr" },
+    { type: "h1", text: "4. Next Steps" },
     { type: "ol", items: [
       "**Discovery Session:** Deep-dive into current workflow",
       "**System Demo:** Show platform capabilities",
@@ -729,8 +835,8 @@ var LIGHT_SAMPLE = {
       "**Pilot Scope:** Define MVP scope"
     ]},
     { type: "callout", variant: "info", lines: [
-      "**Document Prepared By:** Anne So, C&R",
-      "**Date:** February 2026"
+      "**Document Prepared By:** Anne So, C&R Wise AI Limited",
+      "**Date:** March 2026"
     ]}
   ]
 };
@@ -825,50 +931,62 @@ var DARK_CSS = '<style>\n' +
 '</style>';
 
 // ===================================================================
-// CSS — Light Theme (C&R Professional)
+// CSS — Light Theme (C&R Professional Branding)
+// Brand colors: Blue #2459BB, Light Blue #6A9EF5, White, Accent Neon Yellow #E4FE54
 // ===================================================================
 
 function lightBuildCss(accent, accentDark, accentLight) {
+  // C&R brand palette
+  var brandBlue = '#2459BB';
+  var brandBlueDark = '#1a4590';
+  var brandBlueLight = '#6A9EF5';
+  var brandBlueBg = '#EEF4FF';
+  var brandYellow = '#E4FE54';
+  var brandYellowDark = '#c9e24a';
+
   return '<style>\n' +
-  "@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');\n" +
+  "@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&family=Inter:wght@300;400;500;600;700;800&display=swap');\n" +
   '@page { margin:130px 50px 80px 50px; }\n' +
   '* { margin:0; padding:0; box-sizing:border-box; }\n' +
-  "body { font-family:'Inter','Segoe UI',Tahoma,Geneva,Verdana,sans-serif; font-size:11px; line-height:1.6; color:#333; max-width:100%; -webkit-print-color-adjust:exact; print-color-adjust:exact; }\n" +
-  '.doc-title { font-size:28px; font-weight:800; color:#1a365d; border-bottom:none; margin-top:40px; margin-bottom:4px; padding-bottom:0; text-align:center; }\n' +
-  '.doc-subtitle { font-size:18px; font-weight:400; color:#4a5568; border-bottom:none; margin-top:0; margin-bottom:8px; text-align:center; }\n' +
-  'h1 { color:#1a365d; font-size:20px; font-weight:700; border-bottom:3px solid ' + accent + '; padding-bottom:8px; margin-top:28px; margin-bottom:12px; page-break-after:avoid; }\n' +
-  'h2 { color:#2c5282; font-size:15px; font-weight:600; margin-top:22px; margin-bottom:8px; border-left:4px solid ' + accent + '; padding-left:10px; page-break-after:avoid; }\n' +
+  "body { font-family:'Outfit','Inter','Segoe UI',sans-serif; font-size:11px; line-height:1.6; color:#1a202c; max-width:100%; -webkit-print-color-adjust:exact; print-color-adjust:exact; }\n" +
+  '.doc-title { font-size:30px; font-weight:800; color:' + brandBlue + '; border-bottom:none; margin-top:40px; margin-bottom:4px; padding-bottom:0; text-align:center; letter-spacing:-0.5px; }\n' +
+  '.doc-subtitle { font-size:16px; font-weight:500; color:#4a5568; border-bottom:none; margin-top:0; margin-bottom:8px; text-align:center; }\n' +
+  'h1 { color:' + brandBlue + '; font-size:20px; font-weight:700; border-bottom:3px solid ' + brandBlue + '; padding-bottom:8px; margin-top:28px; margin-bottom:12px; page-break-after:avoid; letter-spacing:-0.3px; }\n' +
+  'h2 { color:' + brandBlueDark + '; font-size:15px; font-weight:600; margin-top:22px; margin-bottom:8px; border-left:4px solid ' + brandYellow + '; padding-left:10px; page-break-after:avoid; }\n' +
   'h3 { color:#2d3748; font-size:13px; font-weight:600; margin-top:18px; margin-bottom:6px; page-break-after:avoid; }\n' +
   'h4 { color:#4a5568; font-size:12px; font-weight:600; margin-top:14px; margin-bottom:4px; page-break-after:avoid; }\n' +
-  'p { margin:8px 0; line-height:1.6; }\n' +
+  'p { margin:8px 0; line-height:1.6; color:#333; }\n' +
   'strong { color:#1a202c; font-weight:600; }\n' +
   'table { width:100%; border-collapse:collapse; margin:12px 0; font-size:10px; page-break-inside:avoid; }\n' +
-  'th { background-color:' + accentDark + '; color:#ffffff !important; padding:8px 8px; text-align:left; font-weight:600; font-size:10px; }\n' +
+  'th { background-color:' + brandBlue + '; color:#ffffff !important; padding:8px 10px; text-align:left; font-weight:600; font-size:10px; letter-spacing:0.02em; }\n' +
   'th, th * { color:#ffffff !important; }\n' +
-  'td { padding:7px 8px; border:1px solid #e2e8f0; vertical-align:top; line-height:1.5; }\n' +
-  'tr:nth-child(even) { background-color:#f7fafc; }\n' +
-  '.highlight-row td { background-color:' + accentLight + '; font-weight:600; }\n' +
+  'td { padding:7px 10px; border:1px solid #e2e8f0; vertical-align:top; line-height:1.5; }\n' +
+  'tr:nth-child(even) { background-color:' + brandBlueBg + '; }\n' +
+  '.highlight-row td { background-color:' + brandYellow + '; font-weight:600; color:#1a202c; }\n' +
+  '.highlight-row td strong { color:' + brandBlueDark + '; }\n' +
   'ul, ol { margin:8px 0; padding-left:24px; }\n' +
   'li { margin:6px 0; line-height:1.6; }\n' +
+  'li::marker { color:' + brandBlue + '; }\n' +
   'li ul, li ol { margin:4px 0; }\n' +
-  'blockquote { border-left:4px solid ' + accent + '; margin:14px 0; padding:10px 18px; background-color:' + accentLight + '; font-style:italic; color:#1a365d; }\n' +
-  'blockquote strong { color:#1a365d; font-style:normal; }\n' +
-  'code { background-color:#edf2f7; padding:2px 5px; border-radius:3px; font-family:"JetBrains Mono","Consolas",monospace; font-size:10px; }\n' +
-  'pre { background-color:#1a202c; color:#e2e8f0; padding:14px; border-radius:5px; overflow-x:auto; font-size:10px; margin:12px 0; page-break-inside:avoid; }\n' +
-  'pre.tree { background-color:#f7fafc; color:#2d3748; border:1px solid #e2e8f0; font-size:10px; line-height:1.5; }\n' +
+  'blockquote { border-left:4px solid ' + brandBlue + '; margin:14px 0; padding:10px 18px; background-color:' + brandBlueBg + '; font-style:italic; color:' + brandBlueDark + '; }\n' +
+  'blockquote strong { color:' + brandBlue + '; font-style:normal; }\n' +
+  "code { background-color:#edf2f7; padding:2px 5px; border-radius:3px; font-family:'Space Mono','JetBrains Mono',monospace; font-size:10px; color:" + brandBlueDark + "; }\n" +
+  'pre { background-color:#111827; color:#e2e8f0; padding:14px; border-radius:0; border-left:4px solid ' + brandYellow + '; overflow-x:auto; font-size:10px; margin:12px 0; page-break-inside:avoid; }\n' +
+  'pre.tree { background-color:#f7fafc; color:#2d3748; border:1px solid #e2e8f0; border-left:4px solid ' + brandBlueLight + '; font-size:10px; line-height:1.5; }\n' +
   'pre code { background-color:transparent; color:inherit; padding:0; }\n' +
   'hr { border:none; border-top:2px solid #e2e8f0; margin:24px 0; }\n' +
-  '.callout { margin:14px 0; padding:12px 16px; border-radius:6px; border:1px solid #e2e8f0; background-color:#f7fafc; page-break-inside:avoid; }\n' +
+  '.callout { margin:14px 0; padding:12px 16px; border-radius:0; border:2px solid #e2e8f0; background-color:#f8fafc; page-break-inside:avoid; }\n' +
   '.callout p { margin:4px 0; }\n' +
-  '.callout-info { border-left:4px solid ' + accent + '; background-color:' + accentLight + '; }\n' +
-  '.callout-warning { border-left:4px solid #dd6b20; background-color:#fffaf0; }\n' +
-  '.callout-success { border-left:4px solid #38a169; background-color:#f0fff4; }\n' +
+  '.callout-info { border-left:4px solid ' + brandBlue + '; border-color:' + brandBlue + '; background-color:' + brandBlueBg + '; }\n' +
+  '.callout-warning { border-left:4px solid #dd6b20; border-color:#dd6b20; background-color:#fffaf0; }\n' +
+  '.callout-success { border-left:4px solid #38a169; border-color:#38a169; background-color:#f0fff4; }\n' +
+  '.callout-accent { border-left:4px solid ' + brandYellow + '; border-color:' + brandYellow + '; background-color:#fcffe6; }\n' +
   '.kv { margin:4px 0; font-size:11px; }\n' +
-  '.kv-label { font-weight:600; color:#1a365d; display:inline-block; min-width:140px; }\n' +
+  '.kv-label { font-weight:600; color:' + brandBlue + '; display:inline-block; min-width:140px; }\n' +
   '.kv-value { color:#4a5568; }\n' +
   '.two-col { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin:12px 0; page-break-inside:avoid; }\n' +
-  '.col-box { border:1px solid #e2e8f0; border-radius:6px; padding:12px; background-color:#f7fafc; overflow:hidden; min-width:0; }\n' +
-  '.col-box h4 { margin-top:0; color:' + accentDark + '; }\n' +
+  '.col-box { border:2px solid #e2e8f0; border-radius:0; padding:12px; background-color:#f8fafc; overflow:hidden; min-width:0; }\n' +
+  '.col-box h4 { margin-top:0; color:' + brandBlue + '; border-bottom:2px solid ' + brandYellow + '; padding-bottom:4px; }\n' +
   '.page-break { page-break-after:always; height:0; margin:0; padding:0; }\n' +
   '</style>';
 }
@@ -907,9 +1025,10 @@ function printHelp() {
   console.log('LIGHT THEME OPTIONS:');
   console.log('  -i, --input <file>       Content JSON file (required for generate/preview)');
   console.log('  -o, --output <file>      Output file path');
-  console.log('  --logo1 <file>           Left header logo (client)');
-  console.log('  --logo2 <file>           Right header logo (C&R)');
-  console.log('  --accent <color>         Accent color hex (default: #0066CC)');
+  console.log('  --logo1 <file>           C&R logo (auto-detected from bundled assets)');
+  console.log('  --logo2 <file>           Client logo (user will be prompted if missing)');
+  console.log('  --client-logo <file>     Alias for --logo2');
+  console.log('  --accent <color>         Accent color hex (default: #2459BB — C&R Blue)');
   console.log('  --open                   Open PDF after generation');
   console.log('');
   console.log('EXAMPLES:');

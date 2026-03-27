@@ -1,6 +1,6 @@
 # OpenPAVE PDF Skill
 
-Generate branded PDF proposals and documents from structured JSON content. Includes two professional themes powered by Puppeteer.
+Generate branded PDF proposals and documents from structured JSON content. Two professional themes powered by Puppeteer, with C&R branding built in.
 
 ## Themes
 
@@ -12,18 +12,22 @@ Generate branded PDF proposals and documents from structured JSON content. Inclu
 - Best for: PAVE proposals, client-facing sales documents
 
 ### Light Theme (C&R Professional)
-- White background, configurable accent color (default `#0066CC`)
+- White background with C&R brand colors: **Blue #2459BB**, **Light Blue #6A9EF5**, **Neon Yellow #E4FE54**
+- Outfit + Space Mono fonts (matching CnR Credentials deck)
 - Flowing layout with Puppeteer's native `@page` margins
-- Repeating header/footer via `displayHeaderFooter`
-- Best for: Product vision docs, requirements, specifications
+- Repeating header with dual logos (C&R + client) and blue bottom border
+- Footer with "Commercial in Confidence" center text
+- Best for: SOWs, proposals, product vision docs, specifications
 
-## What's New in v1.1.0
+## What's New in v2.0.0
 
-- **Client Logo Validation** — `generate` and `preview` commands now verify the client logo path exists before rendering. If not found, prints a clear error with instructions instead of silently skipping.
-- **Content Budget / Overflow Prevention** — New `contentBudgetCheck()` runs before HTML generation, estimating each page's content height using weighted block scoring. Pages exceeding the 227mm available area print a WARNING with the estimated height and a suggestion to split.
-- **Standardized Logo Sizing** — Cover: C&R 32px, PAVE 50px, Client 60px. Headers: C&R 16px, PAVE 28px. No `.invert` CSS filter — provide logos in the correct color variant for the theme.
-- **Footer Protection** — 26mm bottom padding on pages to prevent content overlapping the footer area.
-- **Page Guideline** — Max ~10 blocks per page; tables count as 2-3 blocks depending on row count.
+- **C&R Branding Colors** -- Light theme redesigned with brand palette: Blue #2459BB, Light Blue #6A9EF5, White, Neon Yellow accent #E4FE54
+- **Bundled C&R Logo** -- `assets/cnr-logo-black.png` and `cnr-logo-white.png` ship with the skill. Auto-detected when no `--logo1` / `--cnr-logo` is provided.
+- **Client Logo Prompt** -- When no client logo is passed, the skill prints a helpful notice reminding the user to provide one via `--logo2` or `--client-logo`.
+- **Professional Header** -- Dual logo header (C&R | Client) with blue bottom border and document title
+- **Commercial in Confidence Footer** -- Three-column footer: copyright, "Commercial in Confidence", page numbers
+- **Outfit Font** -- Matching CnR Credentials deck typography
+- **Sandbox-Safe Base64** -- Logo encoding uses system `base64` command instead of broken `Buffer.toString('base64')`
 
 ## Requirements
 
@@ -40,17 +44,28 @@ pave install pdf
 
 ```bash
 # Dark theme
-pave run pdf dark sample -o content.json          # Generate sample JSON
-pave run pdf dark generate -i content.json -o proposal.pdf
-pave run pdf dark generate -i content.json -o proposal.pdf --client-logo logo.png --open
-pave run pdf dark preview -i content.json          # HTML preview
+pave run pdf dark sample -o content.json
+pave run pdf dark generate -i content.json -o proposal.pdf --client-logo client.png --open
 
-# Light theme
-pave run pdf light sample -o content.json          # Generate sample JSON
+# Light theme (C&R branded)
+pave run pdf light sample -o content.json
 pave run pdf light generate -i content.json -o doc.pdf
-pave run pdf light generate -i content.json -o doc.pdf --logo1 client.png --logo2 cnr.png --accent "#0066CC" --open
-pave run pdf light preview -i content.json         # HTML preview
+pave run pdf light generate -i content.json -o doc.pdf --logo2 client-logo.png --open
+pave run pdf light generate -i content.json -o doc.pdf --logo2 towngas.png --accent "#2459BB" --open
+
+# HTML preview (no Puppeteer needed)
+pave run pdf light preview -i content.json
+pave run pdf dark preview -i content.json
 ```
+
+### Logo Options
+
+| Theme | C&R Logo | Client Logo |
+|-------|----------|-------------|
+| Dark  | `--cnr-logo` (auto: bundled white) | `--client-logo` (prompted if missing) |
+| Light | `--logo1` (auto: bundled black) | `--logo2` or `--client-logo` (prompted if missing) |
+
+The C&R logo is bundled in `assets/` and auto-detected. Client logos must be provided by the user.
 
 ## Content JSON Schema
 
@@ -60,7 +75,7 @@ pave run pdf light preview -i content.json         # HTML preview
 {
   "entity": "C&R Wise AI Limited",
   "logos": {
-    "cnr": "/path/to/cnr-logo-white.png",
+    "cnr": null,
     "pave": "/path/to/pave-logo.png",
     "client": "/path/to/client-logo.png"
   },
@@ -72,20 +87,14 @@ pave run pdf light preview -i content.json         # HTML preview
     "date": "MARCH 2026",
     "version": "1.0",
     "badge": "Confidential",
-    "headerLabel": "Acme Corp — PAVE AI Enablement"
+    "headerLabel": "Acme Corp - PAVE AI Enablement"
   },
   "pages": [
     {
       "blocks": [
         { "type": "section", "label": "Section 01" },
         { "type": "h1", "text": "Executive Summary" },
-        { "type": "p", "text": "Supports **bold**, *italic*, and `code`." },
-        { "type": "table", "columns": ["Col1", "Col2"], "rows": [{ "cells": ["A", "B"] }] },
-        { "type": "ul", "items": ["Item 1", "Item 2"] },
-        { "type": "callout", "accent": true, "lines": ["Line 1", "Line 2"] },
-        { "type": "blockquote", "text": "A quote" },
-        { "type": "kv", "items": [{ "key": "Key", "value": "Value" }] },
-        { "type": "two-col", "left": { "title": "Left", "blocks": [] }, "right": { "title": "Right", "blocks": [] } }
+        { "type": "p", "text": "Supports **bold**, *italic*, and `code`." }
       ]
     }
   ]
@@ -96,27 +105,25 @@ pave run pdf light preview -i content.json         # HTML preview
 
 ```json
 {
-  "accent": "#0066CC",
+  "accent": "#2459BB",
   "logos": {
-    "logo1": "/path/to/client-logo.png",
-    "logo2": "/path/to/cnr-logo-black.png"
+    "logo1": null,
+    "logo2": "/path/to/client-logo.png"
   },
   "header": {
     "title": "Project Name",
-    "subtitle": "Product Vision Document"
+    "subtitle": "Scope of Work"
   },
   "footer": {
-    "left": "© 2026 C&R Wise AI Limited",
-    "center": "February 2026"
+    "left": "(c) 2026 C&R Wise AI Limited",
+    "center": "Commercial in Confidence"
   },
   "blocks": [
     { "type": "title", "text": "Project Name" },
-    { "type": "subtitle", "text": "Vision Document" },
-    { "type": "h1", "text": "Section Title" },
+    { "type": "subtitle", "text": "Scope of Work" },
+    { "type": "h1", "text": "1. Executive Summary" },
     { "type": "p", "text": "Body text with **bold** and *italic*." },
     { "type": "table", "columns": ["A", "B"], "rows": [{ "cells": ["1", "2"] }] },
-    { "type": "code", "text": "console.log('hello')" },
-    { "type": "tree", "text": "src/\n  index.js\n  utils.js" },
     { "type": "callout", "variant": "info", "lines": ["Note text"] },
     { "type": "page-break" }
   ]
@@ -136,12 +143,20 @@ pave run pdf light preview -i content.json         # HTML preview
 | `table` | Yes | Yes | Table with columns, rows, widths |
 | `ul` / `ol` | Yes | Yes | Lists (light supports nesting) |
 | `blockquote` | Yes | Yes | Styled quote block |
-| `callout` | Yes | Yes | Callout box (dark: accent; light: info/warning/success) |
+| `callout` | Yes | Yes | Callout box (dark: accent; light: info/warning/success/accent) |
 | `kv` | Yes | Yes | Key-value pairs |
 | `two-col` | Yes | Yes | Two-column layout with sub-blocks |
 | `code` | - | Yes | Code block |
 | `tree` | - | Yes | File tree (preformatted) |
 | `page-break` | - | Yes | Force page break |
+
+## Bundled Assets
+
+```
+assets/
+  cnr-logo-black.png   # C&R logo for light backgrounds
+  cnr-logo-white.png   # C&R logo for dark backgrounds
+```
 
 ## License
 

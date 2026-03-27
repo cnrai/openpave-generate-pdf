@@ -2,8 +2,8 @@
 # Generate branded PDF proposals and documents from JSON content
 
 name: pdf
-version: 1.1.0
-description: Generate branded PDF documents with Dark (PAVE Cobalt) and Light (C&R Professional) themes from structured JSON content
+version: 2.0.0
+description: Generate branded PDF documents with Dark (PAVE Cobalt) and Light (C&R Professional) themes. Light theme uses C&R branding (blue #2459BB, neon yellow #E4FE54). Bundled C&R logos auto-detected. Prompts for client logo when missing.
 
 author:
   name: cnrai
@@ -43,7 +43,7 @@ commands:
           - -o, --output <file>
 
   - name: light
-    description: C&R Light Theme — white background, configurable accent
+    description: C&R Light Theme — white background, blue #2459BB, accent neon yellow #E4FE54
     subcommands:
       - name: generate
         description: Generate a PDF from content JSON
@@ -52,6 +52,7 @@ commands:
           - -o, --output <file>
           - --logo1 <file>
           - --logo2 <file>
+          - --client-logo <file>
           - --accent <color>
           - --open
       - name: preview
@@ -85,6 +86,9 @@ permissions:
     - stat
     - open
     - rm
+    - base64
+    - tr
+    - cat
 
 platforms:
   - darwin
