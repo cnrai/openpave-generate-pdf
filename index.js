@@ -220,7 +220,8 @@ function getSkillAssetsDir() {
   // Also check common PAVE skill paths
   var home = process.env.HOME || process.env.USERPROFILE || '';
   if (home) {
-    candidates.push(path.join(home, '.pave', 'skills', 'pdf', 'assets'));
+    candidates.push(path.join(home, '.pave', 'skills', 'generate-pdf', 'assets'));
+    candidates.push(path.join(home, '.pave', 'skills', 'pdf', 'assets')); // legacy path
   }
   for (var i = 0; i < candidates.length; i++) {
     if (fs.existsSync(candidates[i])) return candidates[i];
