@@ -250,7 +250,7 @@ function getBundledCnrLogo(variant) {
 function esc(text) {
   if (!text) return '';
   text = sanitiseText(String(text));
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/\{\{CIRCLE\}\}/g, '&#9679;');
 }
 
 // Sanitise text: replace all non-ASCII with safe ASCII equivalents.
@@ -270,8 +270,10 @@ function sanitiseText(s) {
     .replace(/\u2014/g, ' -- ')     // — em dash
     .replace(/\u2013/g, '-')        // – en dash
     // Bullets and misc
+    .replace(/\u25CF/g, '{{CIRCLE}}') // ● black circle (preserve for tables)
     .replace(/\u2022/g, '-')        // • bullet
     .replace(/\u00b7/g, '-')        // · middle dot
+    .replace(/\u00a0/g, ' ')        // non-breaking space -> regular space
     .replace(/\u00a9/g, '(c)')      // © copyright
     .replace(/\u00ae/g, '(R)')      // ® registered
     .replace(/\u2122/g, '(TM)')     // ™ trademark
@@ -303,7 +305,9 @@ function inline(text) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/\*(.+?)\*/g, '<em>$1</em>')
-    .replace(/`(.+?)`/g, '<code>$1</code>');
+    .replace(/`(.+?)`/g, '<code>$1</code>')
+    .replace(/\{\{CIRCLE\}\}/g, '&#9679;')
+    .replace(/&amp;nbsp;/g, '&nbsp;');
 }
 
 // ===================================================================
@@ -594,7 +598,7 @@ function lightBuildHeaderTemplate(content, logos, accent) {
     logoHtml += '<div style="width:1px;height:20px;background:#e2e8f0;margin:0 10px;"></div>';
   }
   if (logos.logo2) {
-    logoHtml += '<img src="' + logos.logo2 + '" style="height:28px;display:block;" />';
+    logoHtml += '<img src="' + logos.logo2 + '" style="height:44px;display:block;" />';
   }
 
   var titleHtml = '';

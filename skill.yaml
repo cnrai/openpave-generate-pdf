@@ -2,7 +2,7 @@
 # Generate branded PDF proposals and documents from JSON content
 
 name: generate-pdf
-version: 2.2.0
+version: 2.3.0
 description: Generate branded PDF documents with Dark (PAVE Cobalt) and Light (C&R Professional) themes. Light theme uses C&R branding (blue #2459BB, neon yellow #E4FE54). Bundled C&R logos auto-detected. Client logo is mandatory. White-on-transparent logos are detected and rejected on the light theme.
 
 author:
