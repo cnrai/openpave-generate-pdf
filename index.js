@@ -517,44 +517,68 @@ function lightBuildHtml(content, accent, logos) {
   var accentLight = lighten(accent, 0.92);
   var css = lightBuildCss(accent, accentDark, accentLight);
 
-  // Build header and footer HTML for embedding in pages
   var hdr = content.header || {};
-  var ftr = content.footer || {};
-  logos = logos || {};
-  var logo1Img = logos.logo1 ? '<img src="' + logos.logo1 + '" class="hdr-logo" />' : '';
-  var logo2Img = logos.logo2 ? '<img src="' + logos.logo2 + '" class="hdr-logo" />' : '';
-  var logoSep = (logos.logo1 && logos.logo2) ? '<div class="hdr-sep"></div>' : '';
-  var yr = new Date().getFullYear();
-  var footerLeft = esc(ftr.left || '(c) ' + yr + ' C&R Wise AI Limited');
-  var footerCenter = esc(ftr.center || 'Commercial in Confidence');
 
-  var headerHtml = '<div class="page-header"><div class="header-logos">' + logo1Img + logoSep + logo2Img + '</div>' +
-    '<div class="header-title"><div class="header-title-main">' + esc(hdr.title || '') + '</div>' +
-    (hdr.subtitle ? '<div class="header-title-sub">' + esc(hdr.subtitle) + '</div>' : '') +
-    '</div></div>';
-
-  // Split blocks into pages at page-break markers
-  var pages = [[]];
-  blocks.forEach(function(block) {
-    if (block.type === 'page-break') {
-      pages.push([]);
-    } else {
-      pages[pages.length - 1].push(block);
-    }
-  });
-
+  // Continuous flow — no page divs. Puppeteer native header/footer handles pagination.
   var html = '<!DOCTYPE html>\n<html lang="en">\n<head>\n<meta charset="UTF-8">\n<title>' + esc(hdr.title || 'Document') + '</title>\n' + css + '\n</head>\n<body>\n';
 
-  pages.forEach(function(pageBlocks, pageIdx) {
-    var pageNum = pageIdx + 1;
-    var footerHtml = '<div class="page-footer"><span>' + footerLeft + '</span><span class="footer-center">' + footerCenter + '</span><span>Page ' + pageNum + '</span></div>';
-    html += '<div class="page">\n  ' + headerHtml + '\n  <div class="page-content">\n';
-    html += pageBlocks.map(lightRenderBlock).join('\n');
-    html += '\n  </div>\n  ' + footerHtml + '\n</div>\n';
+  blocks.forEach(function(block) {
+    if (block.type === 'page-break') {
+      html += '<div class="page-break"></div>\n';
+    } else {
+      html += lightRenderBlock(block) + '\n';
+    }
   });
 
   html += '\n</body>\n</html>';
   return html;
+}
+
+// Build Puppeteer headerTemplate with inline styles and base64 logos
+function lightBuildHeaderTemplate(content, logos, accent) {
+  var brandBlue = accent || '#2459BB';
+  var hdr = content.header || {};
+  logos = logos || {};
+
+  // Every element MUST have font-size set (Puppeteer quirk: defaults to 0)
+  var logoHtml = '';
+  if (logos.logo1) {
+    logoHtml += '<img src="' + logos.logo1 + '" style="height:22px;display:block;" />';
+  }
+  if (logos.logo1 && logos.logo2) {
+    logoHtml += '<div style="width:1px;height:20px;background:#e2e8f0;margin:0 10px;"></div>';
+  }
+  if (logos.logo2) {
+    logoHtml += '<img src="' + logos.logo2 + '" style="height:22px;display:block;" />';
+  }
+
+  var titleHtml = '';
+  if (hdr.title) {
+    titleHtml += '<div style="font-size:9px;font-weight:600;color:#9ca3af;">' + esc(hdr.title) + '</div>';
+  }
+  if (hdr.subtitle) {
+    titleHtml += '<div style="font-size:7px;color:#9ca3af;">' + esc(hdr.subtitle) + '</div>';
+  }
+
+  return '<div style="width:100%;padding:0 18mm;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #d1d5db;padding-bottom:8px;font-family:Outfit,Inter,Segoe UI,sans-serif;font-size:9px;-webkit-print-color-adjust:exact;">' +
+    '<div style="display:flex;align-items:center;font-size:9px;">' + logoHtml + '</div>' +
+    '<div style="text-align:right;font-size:9px;">' + titleHtml + '</div>' +
+    '</div>';
+}
+
+// Build Puppeteer footerTemplate with inline styles
+function lightBuildFooterTemplate(content, accent) {
+  var brandBlue = accent || '#2459BB';
+  var ftr = content.footer || {};
+  var yr = new Date().getFullYear();
+  var footerLeft = ftr.left || '(c) ' + yr + ' C&R Wise AI Limited';
+  var footerCenter = ftr.center || 'Commercial in Confidence';
+
+  return '<div style="width:100%;padding:0 18mm;display:flex;justify-content:space-between;align-items:center;border-top:1px solid #d1d5db;padding-top:6px;font-family:Outfit,Inter,Segoe UI,sans-serif;font-size:8px;color:#9ca3af;-webkit-print-color-adjust:exact;">' +
+    '<span style="font-size:8px;">' + footerLeft + '</span>' +
+    '<span style="font-size:8px;font-weight:600;color:#9ca3af;">' + footerCenter + '</span>' +
+    '<span style="font-size:8px;">Page <span class="pageNumber"></span></span>' +
+    '</div>';
 }
 
 // ===================================================================
@@ -610,6 +634,9 @@ function renderPdfViaPuppeteer(htmlPath, outputPath, pdfOptions) {
   } catch (e) {
     exec("cat > " + shellEscape(tmpScript) + " << 'PAVE_PDF_EOF'\n" + scriptContent + "\nPAVE_PDF_EOF");
   }
+
+  // Save debug copy of puppeteer script
+  try { fs.writeFileSync('/tmp/pave_pdf_render/debug_last_script.mjs', scriptContent); } catch(e) {}
 
   var result = execCommand('NODE_PATH=/opt/homebrew/lib/node_modules node ' + shellEscape(tmpScript) + ' 2>&1');
 
@@ -812,8 +839,15 @@ function cmdLightGenerate(opts) {
   var tmpHtml = path.join(path.dirname(outputPath), '.tmp-light-doc.html');
   fs.writeFileSync(tmpHtml, html, 'utf8');
 
+  // Build Puppeteer native header/footer templates
+  var headerTemplate = lightBuildHeaderTemplate(content, logos, accent);
+  var footerTemplate = lightBuildFooterTemplate(content, accent);
+
   renderPdfViaPuppeteer(tmpHtml, outputPath, {
-    margin: { top: 0, right: 0, bottom: 0, left: 0 }
+    margin: { top: '28mm', right: '18mm', bottom: '22mm', left: '18mm' },
+    displayHeaderFooter: true,
+    headerTemplate: headerTemplate,
+    footerTemplate: footerTemplate
   });
 
   try { exec('rm -f ' + shellEscape(tmpHtml)); } catch (e) {}
@@ -1088,21 +1122,10 @@ function lightBuildCss(accent, accentDark, accentLight) {
 
   return '<style>\n' +
   "@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Space+Mono:wght@400;700&family=Inter:wght@300;400;500;600;700;800&display=swap');\n" +
-  '@page { size:210mm 297mm; margin:0; }\n' +
   '* { margin:0; padding:0; box-sizing:border-box; }\n' +
-  "html { width:210mm; max-width:210mm; overflow:hidden; }\n" +
-  "body { font-family:'Outfit','Inter','Segoe UI',sans-serif; font-size:11px; line-height:1.6; color:#1a202c; width:210mm; max-width:210mm; -webkit-print-color-adjust:exact; print-color-adjust:exact; }\n" +
-  '.page { width:210mm; max-width:210mm; min-height:297mm; height:297mm; padding:14mm 18mm 14mm 18mm; background:#ffffff; page-break-after:always; position:relative; overflow:hidden; display:flex; flex-direction:column; }\n' +
-  '.page-header { display:flex; justify-content:space-between; align-items:center; padding-bottom:10px; border-bottom:2px solid ' + brandBlue + '; margin-bottom:14px; flex-shrink:0; }\n' +
-  '.header-logos { display:flex; align-items:center; gap:0; flex-shrink:0; }\n' +
-  '.hdr-logo { height:28px; display:block; }\n' +
-  '.hdr-sep { width:1px; height:24px; background:#e2e8f0; margin:0 12px; }\n' +
-  '.header-title { text-align:right; }\n' +
-  '.header-title-main { font-weight:700; color:' + brandBlue + '; font-size:10px; }\n' +
-  '.header-title-sub { font-size:8px; color:#6b7280; }\n' +
-  '.page-content { flex:1; overflow:hidden; }\n' +
-  '.page-footer { display:flex; justify-content:space-between; align-items:center; padding-top:8px; border-top:2px solid ' + brandBlue + '; margin-top:auto; flex-shrink:0; font-size:8px; color:#6b7280; }\n' +
-  '.footer-center { font-weight:600; color:' + brandBlue + '; }\n' +
+  "html { width:100%; }\n" +
+  "body { font-family:'Outfit','Inter','Segoe UI',sans-serif; font-size:11px; line-height:1.6; color:#1a202c; -webkit-print-color-adjust:exact; print-color-adjust:exact; }\n" +
+  '.page-break { page-break-before:always; height:0; margin:0; padding:0; }\n' +
   '.doc-title { font-size:30px; font-weight:800; color:' + brandBlue + '; border-bottom:none; margin-top:40px; margin-bottom:4px; padding-bottom:0; text-align:center; letter-spacing:-0.5px; }\n' +
   '.doc-subtitle { font-size:16px; font-weight:500; color:#4a5568; border-bottom:none; margin-top:0; margin-bottom:8px; text-align:center; }\n' +
   'h1 { color:' + brandBlue + '; font-size:20px; font-weight:700; border-bottom:3px solid ' + brandBlue + '; padding-bottom:8px; margin-top:28px; margin-bottom:12px; page-break-after:avoid; letter-spacing:-0.3px; }\n' +
@@ -1141,7 +1164,6 @@ function lightBuildCss(accent, accentDark, accentLight) {
   '.two-col { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin:12px 0; page-break-inside:avoid; }\n' +
   '.col-box { border:2px solid #e2e8f0; border-radius:0; padding:12px; background-color:#f8fafc; overflow:hidden; min-width:0; }\n' +
   '.col-box h4 { margin-top:0; color:' + brandBlue + '; border-bottom:2px solid ' + brandYellow + '; padding-bottom:4px; }\n' +
-  '.page-break { page-break-after:always; height:0; margin:0; padding:0; }\n' +
   '</style>';
 }
 
