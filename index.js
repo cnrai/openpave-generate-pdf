@@ -249,11 +249,56 @@ function getBundledCnrLogo(variant) {
 
 function esc(text) {
   if (!text) return '';
-  return String(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  text = sanitiseText(String(text));
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+// Sanitise text: replace all non-ASCII with safe ASCII equivalents.
+// The PAVE sandbox (iSH/Alpine) corrupts multi-byte UTF-8 during file I/O,
+// so we MUST keep everything in the 0x00-0x7E ASCII range.
+function sanitiseText(s) {
+  if (!s) return s;
+  s = String(s);
+  return s
+    // Arrows — ASCII only
+    .replace(/\u2192/g, '->')       // → rightwards arrow
+    .replace(/\u2190/g, '<-')       // ← leftwards arrow
+    .replace(/\u2194/g, '<->')      // ↔ left right arrow
+    .replace(/\u21d2/g, '=>')       // ⇒ rightwards double arrow
+    .replace(/\u21d0/g, '<=')       // ⇐ leftwards double arrow
+    // Dashes — use ASCII hyphen
+    .replace(/\u2014/g, ' -- ')     // — em dash
+    .replace(/\u2013/g, '-')        // – en dash
+    // Bullets and misc
+    .replace(/\u2022/g, '-')        // • bullet
+    .replace(/\u00b7/g, '-')        // · middle dot
+    .replace(/\u00a9/g, '(c)')      // © copyright
+    .replace(/\u00ae/g, '(R)')      // ® registered
+    .replace(/\u2122/g, '(TM)')     // ™ trademark
+    // Guillemets (in case they appear in source)
+    .replace(/\u00bb/g, '>>')       // » right guillemet
+    .replace(/\u00ab/g, '<<')       // « left guillemet
+    .replace(/\u203a/g, '>')        // › single right guillemet
+    .replace(/\u2039/g, '<')        // ‹ single left guillemet
+    // Quotes
+    .replace(/[\u2018\u2019]/g, "'") // curly single quotes
+    .replace(/[\u201c\u201d]/g, '"') // curly double quotes
+    .replace(/\u2026/g, '...')      // … ellipsis
+    // Apple SF Symbols (Private Use Area) — strip entirely
+    .replace(/[\uDB80-\uDBFF][\uDC00-\uDFFF]/g, '') // surrogate pairs in PUA Plane 15/16
+    .replace(/[\uE000-\uF8FF]/g, '')                  // BMP Private Use Area
+    .replace(/[\u{F0000}-\u{FFFFD}]/gu, '')           // Supplementary PUA-A
+    .replace(/[\u{100000}-\u{10FFFD}]/gu, '')         // Supplementary PUA-B
+    // Inverted question mark (artifact of failed rendering)
+    .replace(/\u00BF/g, '')
+    // Final safety net: strip any remaining non-ASCII
+    .replace(/[^\x00-\x7E]/g, '')
+    ;
 }
 
 function inline(text) {
   if (!text) return '';
+  text = sanitiseText(text);
   return String(text)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
@@ -549,7 +594,7 @@ function lightBuildHeaderTemplate(content, logos, accent) {
     logoHtml += '<div style="width:1px;height:20px;background:#e2e8f0;margin:0 10px;"></div>';
   }
   if (logos.logo2) {
-    logoHtml += '<img src="' + logos.logo2 + '" style="height:22px;display:block;" />';
+    logoHtml += '<img src="' + logos.logo2 + '" style="height:28px;display:block;" />';
   }
 
   var titleHtml = '';
